@@ -6,6 +6,10 @@ path = "src/server.rs"
 name = "client"
 path = "src/client.rs"
 
+[lib]
+name = "common"
+path = "src/lib.rs"
+
 [package]
 name = "tcprpc"
 version = "0.1.0"
