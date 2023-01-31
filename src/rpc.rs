@@ -1,6 +1,6 @@
 use std::net::{TcpListener, TcpStream};
 use std::collections::hash_map::HashMap;
-use std::sync::{Arc, RwLock, Mutex};
+use std::sync::{Arc, RwLock};
 use std::thread;
 use std::str;
 use std::io::{Read, Write};
@@ -17,7 +17,7 @@ pub struct RPCServer {
 #[derive(Debug)]
 pub struct RPCClient {
     pub addr: String,
-    pub stream: Arc<Mutex<TcpStream>>,
+    pub stream: TcpStream,
     pub fns: HashMap<String, RPCFn>,
 }
 
@@ -103,7 +103,7 @@ impl RPCServer {
 impl RPCClient {
     pub fn connect(addr: String) -> RPCClient{
         println!("try connect on {}", addr);
-        let stream = Arc::new(Mutex::new(TcpStream::connect(addr.as_str()).expect("connect failed")));
+        let stream = TcpStream::connect(addr.as_str()).expect("connect failed");
         let fns = HashMap::new();
         RPCClient {
             addr,
@@ -114,7 +114,7 @@ impl RPCClient {
 
     pub fn dispatch(&self){
         loop {
-          let mut stream = self.stream.lock().unwrap().try_clone().unwrap();
+          let mut stream = self.stream.try_clone().unwrap();
           let mut buf = [0; 128];
           let len = stream.read(&mut buf).unwrap();
           if len == 0 {
@@ -141,7 +141,7 @@ impl RPCClient {
     }
 
     pub fn call(&self, input: String) {
-        let mut stream = self.stream.lock().unwrap();
+        let mut stream = self.stream.try_clone().unwrap();
         println!("call server {}", input);
         stream.write(&input.as_bytes()).expect("write failed");
     }
