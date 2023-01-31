@@ -12,6 +12,7 @@ pub type RPCFn = fn() -> String;
 pub struct RPCServer {
     pub addr: String,
     pub clients: Arc<RwLock<HashMap<String, TcpStream>>>,
+    pub fns: Arc<RwLock<HashMap<String, RPCFn>>>,
 }
 
 #[derive(Debug)]
@@ -21,7 +22,7 @@ pub struct RPCClient {
     pub fns: HashMap<String, RPCFn>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum MessageType {
     Request,
     Response,
@@ -46,7 +47,7 @@ impl Message {
     }
 }
 
-fn handle_client(mut stream: TcpStream, clients: Arc<RwLock<HashMap<String, TcpStream>>>) {
+fn handle_client(mut stream: TcpStream, clients: Arc<RwLock<HashMap<String, TcpStream>>>, fns: Arc<RwLock<HashMap<String, RPCFn>>>) {
     println!("client incoming");
     {
         let mut map = clients.write().expect("RwLock poisoned");
@@ -63,15 +64,35 @@ fn handle_client(mut stream: TcpStream, clients: Arc<RwLock<HashMap<String, TcpS
         }
         // 输出读取到的内容
         println!("read {} bytes: {:?}", len, str::from_utf8(&buf[..len]));
+        let msg = Message::deserialize(&buf[..len]);
+        let fns = fns.read().expect("RwLock poisoned");
+        if msg.mtype == MessageType::Response {
+            continue;
+        }
+        let rsp = match fns.get(&msg.method) {
+            Some(fn_call) => fn_call(),
+            None => String::from("undefined")
+        };
+        let msg = Message{
+          id: msg.id,
+          mtype: MessageType::Response,
+          method: msg.method,
+          value: rsp,
+        };
+        stream
+          .write(&msg.serialize().as_bytes())
+          .expect("write failed");
     }
 }
 
 impl RPCServer {
     pub fn create(addr: String) -> RPCServer {
         let clients = Arc::new(RwLock::new(HashMap::new()));
+        let fns = Arc::new(RwLock::new(HashMap::new()));
         RPCServer {
             addr,
             clients,
+            fns,
         }
     }
 
@@ -80,8 +101,9 @@ impl RPCServer {
         let listener = TcpListener::bind(self.addr.as_str()).unwrap();
         for stream in listener.incoming() {
             let write_clients = Arc::clone(&self.clients);
+            let fnsa = Arc::clone(&self.fns);
             thread::spawn(move || {
-                handle_client(stream.unwrap(), write_clients);
+                handle_client(stream.unwrap(), write_clients, fnsa);
             });
         }
     }
@@ -97,6 +119,11 @@ impl RPCServer {
           value: String::from(""),
         };
         stream.write(&msg.serialize().as_bytes()).expect("write failed");
+    }
+
+    pub fn insert(&mut self, name: String, callback: RPCFn) {
+        let mut fns = self.fns.write().expect("RwLock poisoned");
+        fns.insert(name, callback);
     }
 }
 
@@ -114,35 +141,48 @@ impl RPCClient {
 
     pub fn dispatch(&self){
         loop {
-          let mut stream = self.stream.try_clone().unwrap();
-          let mut buf = [0; 128];
-          let len = stream.read(&mut buf).unwrap();
-          if len == 0 {
-              println!("ok");
-              break;
-          }
-          let msg = str::from_utf8(&buf[..len]);
-          println!("read {} bytes: {:?}", len, msg);
-          let msg = Message::deserialize(&buf[..len]);
-          let rsp = match self.fns.get(&msg.method) {
-              Some(fn_call) => fn_call(),
-              None => String::from("undefined")
-          };
-          let msg = Message{
-            id: msg.id,
-            mtype: MessageType::Response,
-            method: msg.method,
-            value: rsp,
-          };
-          stream
-            .write(&msg.serialize().as_bytes())
-            .expect("write failed");
+            let mut stream = self.stream.try_clone().unwrap();
+            let mut buf = [0; 128];
+            let len = stream.read(&mut buf).unwrap();
+            if len == 0 {
+                println!("ok");
+                break;
+            }
+            let msg = str::from_utf8(&buf[..len]);
+            println!("read {} bytes: {:?}", len, msg);
+            let msg = Message::deserialize(&buf[..len]);
+            if msg.mtype == MessageType::Response {
+                continue;
+            }
+            let rsp = match self.fns.get(&msg.method) {
+                Some(fn_call) => fn_call(),
+                None => String::from("undefined")
+            };
+            let msg = Message{
+              id: msg.id,
+              mtype: MessageType::Response,
+              method: msg.method,
+              value: rsp,
+            };
+            stream
+              .write(&msg.serialize().as_bytes())
+              .expect("write failed");
         }
     }
 
-    pub fn call(&self, input: String) {
+    pub fn call(&self, method: String) {
         let mut stream = self.stream.try_clone().unwrap();
-        println!("call server {}", input);
-        stream.write(&input.as_bytes()).expect("write failed");
+        println!("call server {}", method);
+        let msg = Message{
+          id: 0,
+          mtype: MessageType::Request,
+          method: method,
+          value: String::from(""),
+        };
+        stream.write(&msg.serialize().as_bytes()).expect("write failed");
+    }
+
+    pub fn insert(&mut self, name: String, callback: RPCFn) {
+        self.fns.insert(name, callback);
     }
 }
